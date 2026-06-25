@@ -1,0 +1,560 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Deep Agents on AWS - Workshop Studio provisioning.
+  Uses default VPC for SageMaker Studio. Provisions KB (AOSS + Bedrock),
+  Lambdas, Cognito, Gateway role, S3, and seeds KB docs with ingestion.
+
+Resources:
+
+  # =========================================================================
+  # Default VPC Lookup (for SageMaker Studio)
+  # =========================================================================
+  VpcLookupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DescribeVpc
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeSubnets
+                Resource: "*"
+
+  VpcLookupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt VpcLookupRole.Arn
+      Code:
+        ZipFile: |
+          import boto3, json, urllib3
+          http = urllib3.PoolManager()
+          def send(event, context, status, data={}):
+              body = json.dumps({"Status": status, "Reason": "See CloudWatch", "PhysicalResourceId": context.log_stream_name, "StackId": event["StackId"], "RequestId": event["RequestId"], "LogicalResourceId": event["LogicalResourceId"], "Data": data})
+              http.request("PUT", event["ResponseURL"], body=body, headers={"content-type":""})
+          def handler(event, context):
+              if event['RequestType'] == 'Delete':
+                  send(event, context, "SUCCESS")
+                  return
+              try:
+                  ec2 = boto3.client('ec2')
+                  vpcs = ec2.describe_vpcs(Filters=[{'Name':'isDefault','Values':['true']}])['Vpcs']
+                  if not vpcs:
+                      send(event, context, "FAILED", {'Error':'No default VPC'})
+                      return
+                  vpc_id = vpcs[0]['VpcId']
+                  subs = ec2.describe_subnets(Filters=[{'Name':'vpc-id','Values':[vpc_id]}])['Subnets']
+                  send(event, context, "SUCCESS", {'VpcId': vpc_id, 'SubnetIds': ','.join(s['SubnetId'] for s in subs[:2])})
+              except Exception as e:
+                  send(event, context, "FAILED", {'Error': str(e)})
+
+  DefaultVpcLookup:
+    Type: Custom::DefaultVpcLookup
+    DeletionPolicy: Delete
+    Properties:
+      ServiceToken: !GetAtt VpcLookupFunction.Arn
+
+  # =========================================================================
+  # S3 Bucket
+  # =========================================================================
+  TourBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # =========================================================================
+  # OpenSearch Serverless + Native Index
+  # =========================================================================
+  AOSSEncryptionPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: deepagents-tour-enc
+      Type: encryption
+      Policy: >
+        {"Rules":[{"ResourceType":"collection","Resource":["collection/deepagents-tour"]}],"AWSOwnedKey":true}
+
+  AOSSNetworkPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: deepagents-tour-net
+      Type: network
+      Policy: >
+        [{"Rules":[{"ResourceType":"collection","Resource":["collection/deepagents-tour"]},{"ResourceType":"dashboard","Resource":["collection/deepagents-tour"]}],"AllowFromPublic":true}]
+
+  AOSSDataAccessPolicy:
+    Type: AWS::OpenSearchServerless::AccessPolicy
+    Properties:
+      Name: deepagents-tour-access
+      Type: data
+      Policy: !Sub >
+        [{"Rules":[{"ResourceType":"index","Resource":["index/deepagents-tour/*"],"Permission":["aoss:*"]},{"ResourceType":"collection","Resource":["collection/deepagents-tour"],"Permission":["aoss:*"]}],"Principal":["arn:aws:iam::${AWS::AccountId}:root","arn:aws:iam::${AWS::AccountId}:role/deepagents-tour-kb-role"]}]
+
+  AOSSCollection:
+    Type: AWS::OpenSearchServerless::Collection
+    DependsOn:
+      - AOSSEncryptionPolicy
+      - AOSSNetworkPolicy
+      - AOSSDataAccessPolicy
+    Properties:
+      Name: deepagents-tour
+      Type: VECTORSEARCH
+
+  VectorIndex:
+    Type: AWS::OpenSearchServerless::Index
+    DependsOn: AOSSCollection
+    Properties:
+      CollectionEndpoint: !GetAtt AOSSCollection.CollectionEndpoint
+      IndexName: bedrock-kb-index
+      Settings:
+        Index:
+          Knn: true
+      Mappings:
+        Properties:
+          vector:
+            Type: knn_vector
+            Dimension: 1024
+            Method:
+              Engine: faiss
+              Name: hnsw
+          text:
+            Type: text
+            Index: true
+          metadata:
+            Type: text
+            Index: false
+
+  # =========================================================================
+  # Bedrock Knowledge Base
+  # =========================================================================
+  KBServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: deepagents-tour-kb-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: KBPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+              - Effect: Allow
+                Action: aoss:APIAccessAll
+                Resource: !GetAtt AOSSCollection.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt TourBucket.Arn
+                  - !Sub "${TourBucket.Arn}/*"
+
+  ProductKB:
+    Type: AWS::Bedrock::KnowledgeBase
+    DependsOn: VectorIndex
+    Properties:
+      Name: deepagents-tour-product-kb
+      Description: Product engineering issues and documented fixes.
+      RoleArn: !GetAtt KBServiceRole.Arn
+      KnowledgeBaseConfiguration:
+        Type: VECTOR
+        VectorKnowledgeBaseConfiguration:
+          EmbeddingModelArn: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+      StorageConfiguration:
+        Type: OPENSEARCH_SERVERLESS
+        OpensearchServerlessConfiguration:
+          CollectionArn: !GetAtt AOSSCollection.Arn
+          VectorIndexName: bedrock-kb-index
+          FieldMapping:
+            VectorField: vector
+            TextField: text
+            MetadataField: metadata
+
+  ProductDataSource:
+    Type: AWS::Bedrock::DataSource
+    Properties:
+      KnowledgeBaseId: !Ref ProductKB
+      Name: product-docs
+      DataSourceConfiguration:
+        Type: S3
+        S3Configuration:
+          BucketArn: !GetAtt TourBucket.Arn
+          InclusionPrefixes:
+            - "kb-docs/"
+
+  # =========================================================================
+  # Seed KB docs to S3 + trigger ingestion
+  # =========================================================================
+  SeedAndIngestRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SeedAndIngest
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource:
+                  - !Sub "${TourBucket.Arn}/kb-docs/*"
+                  - !Sub "${TourBucket.Arn}/public-docs/*"
+              - Effect: Allow
+                Action: bedrock:StartIngestionJob
+                Resource: !GetAtt ProductKB.KnowledgeBaseArn
+
+  SeedAndIngestFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 120
+      Role: !GetAtt SeedAndIngestRole.Arn
+      Code:
+        ZipFile: |
+          import json, boto3, time, urllib3
+          http = urllib3.PoolManager()
+          def send(event, context, status, data={}):
+              body = json.dumps({"Status": status, "Reason": "See CloudWatch", "PhysicalResourceId": context.log_stream_name, "StackId": event["StackId"], "RequestId": event["RequestId"], "LogicalResourceId": event["LogicalResourceId"], "Data": data})
+              http.request("PUT", event["ResponseURL"], body=body, headers={"content-type":""})
+          DOCS = {"kb-docs/sh-hub-v2-known-issues.md": "# SmartHome Hub V2 (SH-HUB-V2) - Known issues\n\n## Intermittent wifi connection failure on firmware v2.1.4\n\n**Severity:** High\n**Affected SKU:** SH-HUB-V2\n**Fixed in:** firmware v2.1.5 (released 2026-05-15)\n\n### Symptom\nHub fails to maintain wifi connection. Pairs initially but loses connection within 24 hours.\n\n### Root cause\nRace condition in wifi reconnect logic in firmware v2.1.4.\n\n### Fix\nFirmware v2.1.5 released 2026-05-15. Reboot device, open SmartHome app, accept firmware update prompt, wait 5 minutes.", "kb-docs/smartcam-known-issues.md": "# SmartCam V3 (SC-CAM-V3) - Known issues\n\n## Night-vision degraded above 32C\n\n**Severity:** Medium\n**Fixed in:** firmware v3.4.2 (released 2026-04-05)\n\nIR LED driver throttles too aggressively. Fix: firmware v3.4.2 raises threshold to 38C.", "kb-docs/smartplug-known-issues.md": "# SmartPlug V1 (SP-PLUG-V1) - Known issues\n\n## No active known issues\n\nFirmware v1.2.0 since 2026-01-15. No critical bugs. Standard reset: hold power 10 seconds.", "public-docs/sh-hub-v2-troubleshooting.html": "<!doctype html>\n<html lang=\"en\">\n<head><meta charset=\"utf-8\"><title>SmartHome Hub V2 WiFi Troubleshooting</title></head>\n<body><main>\n<h1>SmartHome Hub V2 WiFi troubleshooting</h1>\n<p>For SmartHome Hub V2 devices that drop WiFi after setup, first confirm the hub is on firmware v2.1.5 or newer.</p>\n<p>If the hub is on firmware v2.1.4, reboot it by unplugging power for 30 seconds, open the SmartHome app on the same WiFi network, and accept the firmware update prompt.</p>\n<p>After the update, the LED should turn solid green and the app should show firmware v2.1.5 under Settings, Device, SmartHome Hub, About.</p>\n<p>If WiFi still drops after v2.1.5, collect router security mode and signal-strength details before escalating.</p>\n</main></body></html>"}
+          def handler(event, context):
+              if event['RequestType'] == 'Delete':
+                  send(event, context, "SUCCESS")
+                  return
+              try:
+                  bucket = event['ResourceProperties']['Bucket']
+                  kb_id = event['ResourceProperties']['KnowledgeBaseId']
+                  ds_id = event['ResourceProperties']['DataSourceId']
+                  s3 = boto3.client('s3')
+                  for key, content in DOCS.items():
+                      ct = 'text/html' if key.endswith('.html') else 'text/markdown'
+                      s3.put_object(Bucket=bucket, Key=key, Body=content.encode(), ContentType=ct)
+                  time.sleep(5)
+                  boto3.client('bedrock-agent').start_ingestion_job(knowledgeBaseId=kb_id, dataSourceId=ds_id)
+                  send(event, context, "SUCCESS", {"Status": "Seeded"})
+              except Exception as e:
+                  send(event, context, "FAILED", {"Error": str(e)})
+
+  SeedAndIngest:
+    Type: Custom::SeedAndIngest
+    DeletionPolicy: Delete
+    DependsOn: ProductDataSource
+    Properties:
+      ServiceToken: !GetAtt SeedAndIngestFunction.Arn
+      Bucket: !Ref TourBucket
+      KnowledgeBaseId: !Ref ProductKB
+      DataSourceId: !GetAtt ProductDataSource.DataSourceId
+
+  # =========================================================================
+  # Lambda Functions
+  # =========================================================================
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  OrderManagementFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: deepagents-tour-order-management
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          from datetime import datetime, timezone
+          def handler(event, context):
+              tool = event.get("tool") or event.get("name") or "lookup_order"
+              args = event.get("arguments") or event.get("input") or {}
+              if tool == "lookup_order":
+                  oid = args.get("order_id")
+                  if not oid: return {"statusCode":400,"body":json.dumps({"error":"order_id required"})}
+                  return {"statusCode":200,"body":json.dumps({"order_id":oid,"status":"delivered","delivered_at":"2026-05-08","items":[{"sku":"SH-HUB-V2","name":"SmartHome Hub","qty":1,"price_usd":129.99}],"customer_id":"C-88421","total_usd":129.99})}
+              if tool == "issue_refund":
+                  oid,amt,reason = args.get("order_id"),args.get("amount_usd"),args.get("reason","agent")
+                  if not oid or amt is None: return {"statusCode":400,"body":json.dumps({"error":"order_id and amount_usd required"})}
+                  return {"statusCode":200,"body":json.dumps({"refund_id":f"R-{abs(hash((oid,float(amt))))%10**8:08d}","order_id":oid,"status":"issued","amount_usd":float(amt),"currency":"USD","reason":reason,"issued_at":datetime.now(timezone.utc).isoformat()})}
+              return {"statusCode":400,"body":json.dumps({"error":f"unknown tool: {tool}"})}
+
+  IssueManagementFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: deepagents-tour-issue-management
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          def handler(event, context):
+              tool = event.get("tool") or event.get("name") or "lookup_customer_tickets"
+              args = event.get("arguments") or event.get("input") or {}
+              if tool == "lookup_customer_tickets":
+                  cid = args.get("customer_id")
+                  if not cid: return {"statusCode":400,"body":json.dumps({"error":"customer_id required"})}
+                  return {"statusCode":200,"body":json.dumps([{"id":"T-1801","product":"SmartCam","status":"resolved","category":"wifi"},{"id":"T-2044","product":"SmartPlug","status":"resolved","category":"wifi"},{"id":"T-2299","product":"SmartHome Hub","status":"open","category":"wifi"}])}
+              return {"statusCode":400,"body":json.dumps({"error":f"unknown tool: {tool}"})}
+
+  # =========================================================================
+  # Cognito + Gateway Role
+  # =========================================================================
+  GatewayAuthPool:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: Delete
+    Properties:
+      UserPoolName: deepagents-tour-gateway-pool
+
+  GatewayAuthDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref GatewayAuthPool
+      Domain: !Sub "deepagents-tour-${AWS::AccountId}"
+
+  GatewayResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      UserPoolId: !Ref GatewayAuthPool
+      Identifier: mcp-gateway
+      Name: MCP Gateway
+      Scopes:
+        - ScopeName: invoke
+          ScopeDescription: Invoke MCP Gateway tools
+
+  GatewayClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: GatewayResourceServer
+    Properties:
+      UserPoolId: !Ref GatewayAuthPool
+      ClientName: deepagents-tour-gateway-client
+      GenerateSecret: true
+      AllowedOAuthFlows:
+        - client_credentials
+      AllowedOAuthScopes:
+        - mcp-gateway/invoke
+      AllowedOAuthFlowsUserPoolClient: true
+
+  GatewayInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "deepagents-tour-gateway-${AWS::AccountId}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeLambdas
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt OrderManagementFunction.Arn
+                  - !GetAtt IssueManagementFunction.Arn
+
+  # =========================================================================
+  # SageMaker Studio (default VPC)
+  # =========================================================================
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      Policies:
+        - PolicyName: WorkshopPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: BedrockInvoke
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:GetFoundationModel
+                  - bedrock:ListFoundationModels
+                Resource: "*"
+              - Sid: BedrockKB
+                Effect: Allow
+                Action:
+                  - bedrock:Retrieve
+                  - bedrock:RetrieveAndGenerate
+                  - bedrock:GetKnowledgeBase
+                  - bedrock:ListKnowledgeBases
+                Resource: "*"
+              - Sid: AgentCore
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:StartCodeInterpreterSession
+                  - bedrock-agentcore:InvokeCodeInterpreter
+                  - bedrock-agentcore:StopCodeInterpreterSession
+                  - bedrock-agentcore:StartBrowserSession
+                  - bedrock-agentcore:StopBrowserSession
+                  - bedrock-agentcore:ConnectBrowserAutomationStream
+                  - bedrock-agentcore:GetBrowserSession
+                  - bedrock-agentcore:ListBrowserSessions
+                  - bedrock-agentcore:CreateGateway
+                  - bedrock-agentcore:GetGateway
+                  - bedrock-agentcore:ListGateways
+                  - bedrock-agentcore:CreateGatewayTarget
+                  - bedrock-agentcore:GetGatewayTarget
+                  - bedrock-agentcore:ListGatewayTargets
+                  - bedrock-agentcore:InvokeGateway
+                  - bedrock-agentcore:CreateWorkloadIdentity
+                  - bedrock-agentcore:GetWorkloadIdentity
+                  - bedrock-agentcore:ListWorkloadIdentities
+                  - bedrock-agentcore:GetWorkloadAccessToken
+                Resource: "*"
+              - Sid: S3Access
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt TourBucket.Arn
+                  - !Sub "${TourBucket.Arn}/*"
+              - Sid: CognitoDescribe
+                Effect: Allow
+                Action:
+                  - cognito-idp:DescribeUserPoolClient
+                  - cognito-idp:DescribeUserPool
+                Resource: !GetAtt GatewayAuthPool.Arn
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Sid: CloudFormation
+                Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: "*"
+              - Sid: PassRoleForGateway
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt GatewayInvokeRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: bedrock-agentcore.amazonaws.com
+
+  StudioDomain:
+    Type: AWS::SageMaker::Domain
+    Properties:
+      DomainName: deepagents-tour
+      AuthMode: IAM
+      DefaultUserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+      SubnetIds: !Split [",", !GetAtt DefaultVpcLookup.SubnetIds]
+      VpcId: !GetAtt DefaultVpcLookup.VpcId
+
+  StudioUserProfile:
+    Type: AWS::SageMaker::UserProfile
+    Properties:
+      DomainId: !Ref StudioDomain
+      UserProfileName: workshop-user
+      UserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+
+  StudioSpace:
+    Type: AWS::SageMaker::Space
+    DependsOn: StudioUserProfile
+    Properties:
+      DomainId: !Ref StudioDomain
+      SpaceName: workshop-space
+      OwnershipSettings:
+        OwnerUserProfileName: workshop-user
+      SpaceSharingSettings:
+        SharingType: Private
+      SpaceSettings:
+        AppType: JupyterLab
+        JupyterLabAppSettings:
+          DefaultResourceSpec:
+            InstanceType: ml.t3.medium
+            SageMakerImageArn: !Sub "arn:aws:sagemaker:${AWS::Region}:081325390199:image/sagemaker-distribution-cpu"
+
+# ===========================================================================
+# Outputs
+# ===========================================================================
+Outputs:
+  StackName:
+    Value: !Ref "AWS::StackName"
+  StudioDomainId:
+    Value: !Ref StudioDomain
+  DataBucketName:
+    Value: !Ref TourBucket
+  BedrockKbId:
+    Value: !Ref ProductKB
+  OrderLambdaArn:
+    Value: !GetAtt OrderManagementFunction.Arn
+  IssueLambdaArn:
+    Value: !GetAtt IssueManagementFunction.Arn
+  CognitoUserPoolId:
+    Value: !Ref GatewayAuthPool
+  CognitoTokenUrl:
+    Value: !Sub "https://deepagents-tour-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/oauth2/token"
+  CognitoClientId:
+    Value: !Ref GatewayClient
+  GatewayRoleArn:
+    Value: !GetAtt GatewayInvokeRole.Arn
+  SageMakerRoleArn:
+    Value: !GetAtt SageMakerExecutionRole.Arn

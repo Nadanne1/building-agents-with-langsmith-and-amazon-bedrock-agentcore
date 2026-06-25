@@ -1,0 +1,34 @@
+version: 2.0
+
+defaultLocaleCode: en-US
+localeCodes:
+  - en-US
+
+awsAccountConfig:
+  accountSources:
+    - WorkshopStudio
+    - CustomerProvided
+
+  participantRole:
+    iamPolicies:
+      - static/iam_participant_policy.json
+    managedPolicies:
+      - "arn:aws:iam::aws:policy/AmazonSageMakerFullAccess"
+      - "arn:aws:iam::aws:policy/AmazonBedrockFullAccess"
+
+  regionConfiguration:
+    minAccessibleRegions: 1
+    maxAccessibleRegions: 1
+    deployableRegions:
+      optional:
+        - us-east-1
+
+infrastructure:
+  cloudformationTemplates:
+    - templateLocation: static/cfn/workshop-provisioning.yaml
+      label: Deep Agents on AWS Workshop Infrastructure
+      participantAllStackOutputsVisible: true
+      participantVisibleStackOutputs:
+        - StackName
+        - BedrockKbId
+        - DataBucketName
