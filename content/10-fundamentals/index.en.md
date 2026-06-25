@@ -3,61 +3,79 @@ title: "Fundamentals"
 weight: 10
 ---
 
-
 This page introduces the core concepts you will use throughout the workshop.
 
-## LangChain DeepAgents
+## LangChain Deep Agents
 
-DeepAgents is LangChain's multi-agent orchestration framework. Instead of a flat tool-calling loop, a DeepAgent uses:
+Deep Agents is LangChain's agent harness for long-running, multi-step work. Instead of a flat tool-calling loop, a Deep Agent can use:
 
-- **A planner** (`write_todos`) that decomposes tasks into steps before acting
-- **Sub-agents** with their own prompts and tool subsets, running in isolated context windows
-- **A virtual filesystem** (`read_file`, `write_file`) as the handoff surface between sub-agents
-- **Context management** - oversized tool results spill to the filesystem, conversation auto-summarizes near context limits
+- A planning tool (`write_todos`) to break work into steps before acting
+- Sub-agents with their own prompts and tool subsets, running in isolated context windows
+- A virtual filesystem (`read_file`, `write_file`, `edit_file`, `ls`, `grep`) as the handoff surface between agents
+- Context management that moves oversized results into files and summarizes conversation history near context limits
 
-This pattern keeps the planner's context small while sub-agents do focused work.
+This pattern keeps the supervisor's context focused while sub-agents do narrow research, tool use, and drafting work.
 
 ## Amazon Bedrock
 
-Fully managed access to foundation models:
+Amazon Bedrock provides managed access to the foundation models used in this workshop:
 
-- **Claude Haiku 4.5** - fast agent model (all parts)
-- **Claude Sonnet 4.6** - eval judge (Part 6)
-- **Titan Embeddings v2** - Knowledge Base embeddings
+- Claude Haiku 4.5 - fast agent model used throughout the notebook
+- Claude Sonnet 4.6 - stronger judge model used for evals in Part 6
+- Titan Embeddings v2 - embedding model used by the Bedrock Knowledge Base
 
-All accessed via cross-region inference profiles (the `us.` prefix in model IDs).
+The Claude model IDs use the `us.` cross-region inference profile prefix. The Knowledge Base uses Titan Embeddings v2 for document retrieval.
 
 ## Amazon Bedrock AgentCore
 
-Managed runtime primitives for agents - tools you call on demand without provisioning:
+Amazon Bedrock AgentCore provides managed capabilities for agent workloads:
 
-- **Code Interpreter** - sandboxed Python execution in a MicroVM
-- **Browser** - managed headless Chromium via Chrome DevTools Protocol
-- **Gateway** - an MCP server that federates your Lambda APIs as discoverable tools with centralized auth
+- Code Interpreter - sandboxed Python execution in an isolated MicroVM
+- Browser - managed Chromium access through the Chrome DevTools Protocol
+- Gateway - an MCP server that exposes Lambda-backed APIs as discoverable tools with centralized auth
+
+In this workshop, Code Interpreter and Browser are used at runtime. Gateway is registered after CDK deploy with `scripts/register_gateway.py`.
 
 ## Bedrock Knowledge Bases
 
-Managed RAG: documents in S3 → chunking → Titan embeddings → OpenSearch Serverless. The agent calls `Retrieve` and gets passages with source citations.
+Bedrock Knowledge Bases provides managed retrieval over product support documents. The CDK stack uploads documents to S3, indexes them with Titan Embeddings v2, and backs retrieval with OpenSearch Serverless.
 
-## LangSmith (AWS-Region Instance)
+The agent calls the Knowledge Base through `query_product_kb` and receives passages with source citations, so customer replies can cite the documented fix instead of guessing.
 
-Observability and evaluation at `aws.smith.langchain.com`:
+## LangSmith AWS-Region Instance
 
-- **Tracing** - hierarchical traces of every agent run
-- **Datasets + Experiments** - curated examples and multi-evaluator scoring
-- **Deployment** - managed runtime for LangGraph apps
-- **Annotation queues** - human review feeding back into eval datasets
+LangSmith provides observability, evaluation, and deployment workflows at `https://aws.smith.langchain.com`:
 
-## MCP (Model Context Protocol)
+- Tracing - hierarchical traces for agent runs, sub-agent calls, tool calls, and file operations
+- Datasets and experiments - curated regression examples and multi-evaluator scoring
+- Evaluators - LLM-as-judge and deterministic checks for answer quality and trajectory safety
+- Annotation queues - human review that can feed new examples back into datasets
+- Deployment workflows - optional hosted deployment for LangGraph apps when workshop access allows it
 
-A standard protocol for exposing tools to agents. AgentCore Gateway is an MCP server - you register Lambdas as targets and the agent discovers them over one connection, no per-tool wrapper code.
+## MCP
 
-![Workshop Architecture](/static/architecture-diagram.png)
+Model Context Protocol is a standard protocol for exposing tools to agents. AgentCore Gateway acts as an MCP server: you register Lambda targets, then the agent discovers order, ticket, and refund tools over one Gateway connection instead of writing one custom wrapper per backend API.
+
+## Workshop Architecture
+
+The workshop starts with a notebook running in the attendee environment. The notebook builds a Deep Agents support assistant that plans work, delegates research to sub-agents, uses a virtual filesystem for handoffs, and gates destructive refund actions with human approval.
+
+The agent uses AWS services for the operational pieces:
+
+- Bedrock Claude for model inference
+- Bedrock Knowledge Bases for grounded product support retrieval
+- S3 for durable agent files and customer-scoped memory
+- AgentCore Browser for reading public support documentation
+- AgentCore Code Interpreter for sandboxed Python execution
+- AgentCore Gateway for Lambda-backed order, ticket, and refund tools over MCP
+- Cognito for Gateway client-credentials auth
+
+LangSmith receives traces from the notebook and is used for datasets, experiments, evaluators, annotation queues, and optional hosted deployment workflows.
 
 ## Resources
 
-- [LangChain DeepAgents Documentation](https://docs.langchain.com/deepagents)
-- [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock/latest/userguide/agentcore.html)
-- [LangSmith Documentation](https://docs.smith.langchain.com/)
+- [LangChain Deep Agents documentation](https://docs.langchain.com/deepagents)
+- [Amazon Bedrock AgentCore documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/agentcore.html)
+- [LangSmith documentation](https://docs.smith.langchain.com/)
 
 Proceed to [Part 1 - First Agent and KB](/20-first-agent-and-kb/).

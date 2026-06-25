@@ -13,7 +13,7 @@ AWS Workshop Studio content for the "Deep Agents on AWS" workshop - a 90-minute 
 ## Source Code
 
 The notebook and Python modules participants run are maintained by the LangChain team at:
-https://github.com/srimanthtangedipalli-eng/deepagents-aws-tour
+https://github.com/langchain-samples/langchain-aws-samples/tree/main/examples/deepagents-aws-tour
 
 ## Deployment
 
