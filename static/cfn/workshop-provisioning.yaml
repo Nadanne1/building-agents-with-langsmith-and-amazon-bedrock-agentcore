@@ -431,6 +431,13 @@ Resources:
                   - bedrock:GetFoundationModel
                   - bedrock:ListFoundationModels
                 Resource: "*"
+              - Sid: BedrockMarketplaceSubscribe
+                Effect: Allow
+                Action: aws-marketplace:Subscribe
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:CalledViaLast: bedrock.amazonaws.com
               - Sid: BedrockKB
                 Effect: Allow
                 Action:
