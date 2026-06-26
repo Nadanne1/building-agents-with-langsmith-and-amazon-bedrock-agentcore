@@ -58,6 +58,8 @@ Model Context Protocol is a standard protocol for exposing tools to agents. Agen
 
 ## Workshop Architecture
 
+![Workshop Architecture](/static/architecture-diagram.png)
+
 The workshop starts with a notebook running in the attendee environment. The notebook builds a Deep Agents support assistant that plans work, delegates research to sub-agents, uses a virtual filesystem for handoffs, and gates destructive refund actions with human approval.
 
 The agent uses AWS services for the operational pieces:
