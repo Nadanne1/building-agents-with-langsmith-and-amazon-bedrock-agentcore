@@ -310,17 +310,33 @@ Resources:
         ZipFile: |
           import json
           from datetime import datetime, timezone
+          def _lookup_order(order_id):
+              return {"order_id": order_id, "status": "delivered", "delivered_at": "2026-05-08",
+                  "items": [{"sku": "SH-HUB-V2", "name": "SmartHome Hub", "qty": 1, "price_usd": 129.99}],
+                  "customer_id": "C-88421", "total_usd": 129.99}
+          def _issue_refund(order_id, amount_usd, reason):
+              return {"refund_id": f"R-{abs(hash((order_id, amount_usd, reason))) % 10**8:08d}",
+                  "order_id": order_id, "status": "issued", "amount_usd": amount_usd,
+                  "currency": "USD", "reason": reason, "issued_at": datetime.now(timezone.utc).isoformat()}
+          def _tool_and_args(event, context):
+              custom = getattr(getattr(context, "client_context", None), "custom", None) or {}
+              tool = custom.get("bedrockAgentCoreToolName", "")
+              if tool:
+                  return tool.split("___")[-1], event if isinstance(event, dict) else {}
+              event = event if isinstance(event, dict) else {}
+              return event.get("tool") or event.get("name") or "lookup_order", event.get("arguments") or event.get("input") or event
           def handler(event, context):
-              tool = event.get("tool") or event.get("name") or "lookup_order"
-              args = event.get("arguments") or event.get("input") or {}
+              tool, args = _tool_and_args(event, context)
               if tool == "lookup_order":
                   oid = args.get("order_id")
                   if not oid: return {"statusCode":400,"body":json.dumps({"error":"order_id required"})}
-                  return {"statusCode":200,"body":json.dumps({"order_id":oid,"status":"delivered","delivered_at":"2026-05-08","items":[{"sku":"SH-HUB-V2","name":"SmartHome Hub","qty":1,"price_usd":129.99}],"customer_id":"C-88421","total_usd":129.99})}
+                  return {"statusCode":200,"body":json.dumps(_lookup_order(oid))}
               if tool == "issue_refund":
-                  oid,amt,reason = args.get("order_id"),args.get("amount_usd"),args.get("reason","agent")
+                  oid = args.get("order_id")
+                  amt = args.get("amount_usd")
+                  reason = args.get("reason") or "support-agent initiated"
                   if not oid or amt is None: return {"statusCode":400,"body":json.dumps({"error":"order_id and amount_usd required"})}
-                  return {"statusCode":200,"body":json.dumps({"refund_id":f"R-{abs(hash((oid,float(amt))))%10**8:08d}","order_id":oid,"status":"issued","amount_usd":float(amt),"currency":"USD","reason":reason,"issued_at":datetime.now(timezone.utc).isoformat()})}
+                  return {"statusCode":200,"body":json.dumps(_issue_refund(oid, float(amt), reason))}
               return {"statusCode":400,"body":json.dumps({"error":f"unknown tool: {tool}"})}
 
   IssueManagementFunction:
@@ -334,13 +350,23 @@ Resources:
       Code:
         ZipFile: |
           import json
+          def _lookup_customer_tickets(customer_id):
+              return [{"id": "T-1801", "product": "SmartCam", "status": "resolved", "category": "wifi"},
+                  {"id": "T-2044", "product": "SmartPlug", "status": "resolved", "category": "wifi"},
+                  {"id": "T-2299", "product": "SmartHome Hub", "status": "open", "category": "wifi"}]
+          def _tool_and_args(event, context):
+              custom = getattr(getattr(context, "client_context", None), "custom", None) or {}
+              tool = custom.get("bedrockAgentCoreToolName", "")
+              if tool:
+                  return tool.split("___")[-1], event if isinstance(event, dict) else {}
+              event = event if isinstance(event, dict) else {}
+              return event.get("tool") or event.get("name") or "lookup_customer_tickets", event.get("arguments") or event.get("input") or event
           def handler(event, context):
-              tool = event.get("tool") or event.get("name") or "lookup_customer_tickets"
-              args = event.get("arguments") or event.get("input") or {}
+              tool, args = _tool_and_args(event, context)
               if tool == "lookup_customer_tickets":
                   cid = args.get("customer_id")
                   if not cid: return {"statusCode":400,"body":json.dumps({"error":"customer_id required"})}
-                  return {"statusCode":200,"body":json.dumps([{"id":"T-1801","product":"SmartCam","status":"resolved","category":"wifi"},{"id":"T-2044","product":"SmartPlug","status":"resolved","category":"wifi"},{"id":"T-2299","product":"SmartHome Hub","status":"open","category":"wifi"}])}
+                  return {"statusCode":200,"body":json.dumps(_lookup_customer_tickets(cid))}
               return {"statusCode":400,"body":json.dumps({"error":f"unknown tool: {tool}"})}
 
   # =========================================================================
@@ -431,7 +457,7 @@ Resources:
                   - bedrock:GetFoundationModel
                   - bedrock:ListFoundationModels
                 Resource: "*"
-              - Sid: BedrockMarketplaceSubscribe
+              - Sid: MarketplaceForBedrock
                 Effect: Allow
                 Action: aws-marketplace:Subscribe
                 Resource: "*"
@@ -551,6 +577,8 @@ Outputs:
     Value: !Ref TourBucket
   BedrockKbId:
     Value: !Ref ProductKB
+  PublicSupportDocKey:
+    Value: "public-docs/sh-hub-v2-troubleshooting.html"
   OrderLambdaArn:
     Value: !GetAtt OrderManagementFunction.Arn
   IssueLambdaArn:

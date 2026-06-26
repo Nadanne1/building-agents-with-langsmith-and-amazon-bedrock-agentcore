@@ -28,8 +28,8 @@ Your AWS account has been pre-provisioned with all required infrastructure: Sage
 
 ```bash
 cd ~
-wget https://ws-assets-us-east-1.s3.amazonaws.com/9b8a1f16-ad5c-415d-8640-8a773e835fce/deepagents-aws-tour.zip
-unzip deepagents-aws-tour.zip -d deepagents-aws-tour
+git clone https://github.com/langchain-samples/langchain-aws-samples.git
+cp -r langchain-aws-samples/examples/deepagents-aws-tour .
 cd deepagents-aws-tour
 ```
 

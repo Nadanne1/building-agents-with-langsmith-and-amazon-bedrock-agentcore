@@ -15,6 +15,17 @@
       "Resource": "*"
     },
     {
+      "Sid": "MarketplaceForBedrock",
+      "Effect": "Allow",
+      "Action": "aws-marketplace:Subscribe",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:CalledViaLast": "bedrock.amazonaws.com"
+        }
+      }
+    },
+    {
       "Sid": "BedrockKnowledgeBases",
       "Effect": "Allow",
       "Action": [
