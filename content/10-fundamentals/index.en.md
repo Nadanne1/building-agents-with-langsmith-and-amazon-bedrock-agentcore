@@ -34,11 +34,11 @@ Amazon Bedrock AgentCore provides managed capabilities for agent workloads:
 - Browser - managed Chromium access through the Chrome DevTools Protocol
 - Gateway - an MCP server that exposes Lambda-backed APIs as discoverable tools with centralized auth
 
-In this workshop, Code Interpreter and Browser are used at runtime. Gateway is registered after CDK deploy with `scripts/register_gateway.py`.
+In this workshop, Code Interpreter and Browser are used at runtime. Gateway is registered after infrastructure deploy with `scripts/register_gateway.py`.
 
 ## Bedrock Knowledge Bases
 
-Bedrock Knowledge Bases provides managed retrieval over product support documents. The CDK stack uploads documents to S3, indexes them with Titan Embeddings v2, and backs retrieval with OpenSearch Serverless.
+Bedrock Knowledge Bases provides managed retrieval over product support documents. The provisioning stack uploads documents to S3, indexes them with Titan Embeddings v2, and backs retrieval with OpenSearch Serverless.
 
 The agent calls the Knowledge Base through `query_product_kb` and receives passages with source citations, so customer replies can cite the documented fix instead of guessing.
 
@@ -57,6 +57,8 @@ LangSmith provides observability, evaluation, and deployment workflows at `https
 Model Context Protocol is a standard protocol for exposing tools to agents. AgentCore Gateway acts as an MCP server: you register Lambda targets, then the agent discovers order, ticket, and refund tools over one Gateway connection instead of writing one custom wrapper per backend API.
 
 ## Workshop Architecture
+
+![Workshop Architecture](/static/langchain-aws-arch.png)
 
 The workshop starts with a notebook running in the attendee environment. The notebook builds a Deep Agents support assistant that plans work, delegates research to sub-agents, uses a virtual filesystem for handoffs, and gates destructive refund actions with human approval.
 
@@ -77,5 +79,6 @@ LangSmith receives traces from the notebook and is used for datasets, experiment
 - [LangChain Deep Agents documentation](https://docs.langchain.com/deepagents)
 - [Amazon Bedrock AgentCore documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/agentcore.html)
 - [LangSmith documentation](https://docs.smith.langchain.com/)
+- [Workshop source code](https://github.com/langchain-samples/langchain-aws-samples/tree/main/examples/deepagents-aws-tour)
 
 Proceed to [Part 1 - First Agent and KB](/20-first-agent-and-kb/).

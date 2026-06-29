@@ -12,6 +12,10 @@ Your AWS account has been pre-provisioned with all required infrastructure: Sage
 2. Sign in and open the AWS Console from the event dashboard
 3. Confirm you are in **us-east-1** (N. Virginia)
 
+![Agree and Join Event](/static/workshop-agree-and-join-event-page.png)
+
+![AWS Console Login](/static/workshop-login-url.png)
+
 ## Open SageMaker Studio
 
 1. In the AWS Console, search for **SageMaker AI** and open it
@@ -21,9 +25,16 @@ Your AWS account has been pre-provisioned with all required infrastructure: Sage
 5. Click **Run** to start the space
 6. Once the space is running, click **Open** to launch JupyterLab
 
+![Open SageMaker Studio](/static/how-to-open-sagemaker-studio.png)
+
+![Open JupyterLab](/static/how-to-open-jupyter-lab.png)
+
 ## Get the Workshop Code
 
-1. Open a terminal: **File -> New -> Terminal**
+1. Open a terminal in JupyterLab: **File -> New -> Terminal**
+
+   ![Open Terminal in JupyterLab](/static/how-to-open-terminal-on-jupyter-notebook.png)
+
 2. Download and extract the workshop source code:
 
 ```bash
@@ -33,7 +44,7 @@ cp -r langchain-aws-samples/examples/deepagents-aws-tour .
 cd deepagents-aws-tour
 ```
 
-4. Install dependencies and register the Jupyter kernel:
+3. Install dependencies and register the Jupyter kernel:
 
 ```bash
 pip install uv
@@ -101,6 +112,8 @@ Use `https://aws.api.smith.langchain.com`, not the UI URL. A key from the defaul
 ## Register the Gateway
 
 Copy the stack name from the Workshop Studio event dashboard, replace the placeholder, and run the Gateway registration script:
+
+![Workshop Stack Outputs](/static/workshop-output.png)
 
 ```bash
 export TOUR_STACK_NAME=<paste-stack-name-from-dashboard>

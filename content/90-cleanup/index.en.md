@@ -3,88 +3,86 @@ title: "Cleanup"
 weight: 90
 ---
 
-The workshop provisions real AWS resources that can bill while they exist. Tear them down when you're done.
+## At an AWS Event
 
-The Bedrock Knowledge Base uses OpenSearch Serverless behind the scenes. Confirm it is deleted after cleanup, because retained OpenSearch Serverless resources can continue billing even when idle.
+If you ran this workshop at an AWS-hosted event using a Workshop Studio provisioned account, no cleanup is required. The sandbox account and all resources in it are automatically reclaimed when the event ends.
 
-## Delete Optional Hosted Deployment Resources
+## Self-Paced (Your Own Account)
 
-If you created optional hosted deployment AWS credentials, delete the access key before destroying the stack so CloudFormation can delete the IAM user cleanly:
+If you ran this workshop in your own AWS account, follow these steps to avoid ongoing charges.
 
-```bash
-uv run python scripts/create_deployment_user_key.py --delete-existing
-```
+### Estimated Costs
 
-If you completed the optional hosted deployment path in AWS LangSmith, delete that deployment in `https://aws.smith.langchain.com`:
+If you complete the workshop in a single session (~90 minutes) and delete all resources immediately after, the estimated cost is approximately **$5-10 USD**. The primary cost drivers are:
 
-1. Open **Deployments**.
-2. Select your workshop deployment.
-3. Delete the deployment.
+| Service | Cost Driver | Estimate |
+|---------|-------------|----------|
+| OpenSearch Serverless | Minimum 2 OCUs while collection exists (~$0.24/hr each) | ~$4-7 for 90 min |
+| Amazon Bedrock (Claude) | Token usage across notebook cells | ~$1-3 |
+| SageMaker Studio | ml.t3.medium instance (~$0.05/hr) | ~$0.10 |
+| Lambda, Cognito, S3 | Minimal usage | < $0.01 |
+| AgentCore (Code Interpreter, Browser) | Per-session charges | ~$0.50 |
 
-Skip this section if you only completed the required local deploy-readiness path.
+The OpenSearch Serverless collection is the most expensive resource and bills continuously while it exists. Delete resources promptly after completing the workshop.
 
-## Delete the AgentCore Gateway
+Pricing links:
+- [Amazon OpenSearch Serverless Pricing](https://aws.amazon.com/opensearch-service/pricing/)
+- [Amazon Bedrock Pricing](https://aws.amazon.com/bedrock/pricing/)
+- [Amazon SageMaker Pricing](https://aws.amazon.com/sagemaker/pricing/)
+- [Amazon Bedrock AgentCore Pricing](https://aws.amazon.com/bedrock/agentcore/pricing/)
 
-The Gateway is created by `scripts/register_gateway.py`, not by CDK, so delete it separately.
+### Step 1: Delete the AgentCore Gateway
 
-List gateways:
-
-```bash
-aws bedrock-agentcore-control list-gateways
-```
-
-Delete the workshop Gateway:
-
-```bash
-aws bedrock-agentcore-control delete-gateway --gateway-identifier <gateway-id>
-```
-
-Use the Gateway ID for the `deepagents-tour-gateway` Gateway.
-
-## Destroy the CDK Stack
-
-Run this from the workshop project directory:
+The Gateway was created by `register_gateway.py` and is not part of the CloudFormation stack. Delete it manually:
 
 ```bash
-cdk destroy --force
+GATEWAY_ID=$(aws bedrock-agentcore-control list-gateways --region us-east-1 --query "items[?name=='deepagents-tour-gateway'].gatewayId" --output text)
+
+# Delete targets first
+for TARGET in $(aws bedrock-agentcore-control list-gateway-targets --gateway-identifier $GATEWAY_ID --region us-east-1 --query "items[*].targetId" --output text); do
+  aws bedrock-agentcore-control delete-gateway-target --gateway-identifier $GATEWAY_ID --target-id $TARGET --region us-east-1
+done
+
+# Wait for targets to delete, then delete gateway
+sleep 10
+aws bedrock-agentcore-control delete-gateway --gateway-identifier $GATEWAY_ID --region us-east-1
 ```
 
-This removes the CDK-managed resources:
+### Step 2: Delete the CloudFormation Stack
 
-- S3 bucket for KB data, agent files, and public docs
-- Bedrock Knowledge Base resources managed by the stack
-- Order Management and Issue Management Lambda functions
-- Cognito User Pool and app client
-- Gateway IAM role
-- Attendee IAM policy
-- Optional hosted deployment IAM user, if its access keys were deleted first
+This removes all provisioned resources: SageMaker Studio, Knowledge Base, OpenSearch Serverless collection, S3 bucket, Lambda functions, Cognito, and IAM roles.
 
-The S3 bucket uses `RemovalPolicy.DESTROY` with `auto_delete_objects=True`, so bucket contents are removed during stack deletion.
-
-## Verify
-
-Check for remaining workshop stacks:
+If you used the Workshop Studio provisioned account, the stack name is `workshop-provisioning`. If you deployed with CDK in the self-paced path, use `cdk destroy` instead or find your stack name with `aws cloudformation list-stacks`.
 
 ```bash
-aws cloudformation list-stacks \
-  --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
-  --query "StackSummaries[?contains(StackName, 'Tour')]"
+aws cloudformation delete-stack --stack-name workshop-provisioning --region us-east-1
 ```
 
-Expected result:
-
-```json
-[]
-```
-
-Also check for remaining Gateway resources:
+The OpenSearch Serverless collection takes 5-10 minutes to delete. Monitor progress:
 
 ```bash
-aws bedrock-agentcore-control list-gateways
+aws cloudformation wait stack-delete-complete --stack-name workshop-provisioning --region us-east-1
 ```
 
-Finally, confirm in the AWS console that no workshop OpenSearch Serverless collection remains for the Bedrock Knowledge Base.
+### Step 3: Delete LangSmith Deployment (if created)
 
-Checkpoint: CDK stack destroyed, AgentCore Gateway deleted, optional hosted LangSmith deployment removed if you created one, optional deployment access key deleted if you created one, and no ongoing AWS charges from workshop resources.
+If you deployed to LangSmith Deployment in Part 7:
 
-Proceed to [Summary](/99-summary/).
+1. Go to [aws.smith.langchain.com](https://aws.smith.langchain.com/)
+2. Navigate to **Deployments**
+3. Find your deployment and delete it
+
+### Resources Created by This Workshop
+
+| Resource | Service | Deleted By |
+|----------|---------|------------|
+| SageMaker Studio Domain + Space | SageMaker | CFN stack delete |
+| OpenSearch Serverless collection | OpenSearch | CFN stack delete |
+| Bedrock Knowledge Base | Bedrock | CFN stack delete |
+| S3 bucket (KB docs + agent files) | S3 | CFN stack delete |
+| Order Management Lambda | Lambda | CFN stack delete |
+| Issue Management Lambda | Lambda | CFN stack delete |
+| Cognito User Pool | Cognito | CFN stack delete |
+| IAM roles (SageMaker, KB, Gateway) | IAM | CFN stack delete |
+| AgentCore Gateway + targets | AgentCore | Manual (Step 1) |
+| LangSmith Deployment (optional) | LangSmith | Manual (Step 3) |
