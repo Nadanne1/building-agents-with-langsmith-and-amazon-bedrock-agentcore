@@ -539,6 +539,22 @@ Resources:
         ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
       SubnetIds: !Split [",", !GetAtt DefaultVpcLookup.SubnetIds]
       VpcId: !GetAtt DefaultVpcLookup.VpcId
+      KmsKeyId: !GetAtt StudioKmsKey.Arn
+
+  StudioKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for SageMaker Studio EFS encryption
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowRootAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
 
   StudioUserProfile:
     Type: AWS::SageMaker::UserProfile
